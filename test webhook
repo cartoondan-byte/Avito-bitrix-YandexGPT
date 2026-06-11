@@ -1,0 +1,26 @@
+import requests
+
+BITRIX_WEBHOOK = "вводим свой"
+
+def create_lead(name, chat_id, item_title, city):
+    url = f"{BITRIX_WEBHOOK}crm.lead.add.json"
+    data = {
+        "fields": {
+            "TITLE": f"Авито: {item_title}",
+            "NAME": name,
+            "SOURCE_ID": "WEB",
+            "SOURCE_DESCRIPTION": f"Авито | Чат: {chat_id} | Город: {city}",
+            "COMMENTS": f"Клиент написал по объявлению: {item_title}",
+        }
+    }
+    response = requests.post(url, json=data)
+    print(response.json())
+    return response.json()
+
+if __name__ == "__main__":
+    create_lead(
+        name="Марина",
+        chat_id="u2i-HmMWEzWj46BypRu7Oe0ieQ",
+        item_title="Прибор диагностики подвески Люфт детектор",
+        city="Пенза"
+    )
