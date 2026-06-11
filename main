@@ -1,0 +1,247 @@
+import requests
+import time
+from datetime import datetime
+
+# ═══ НАСТРОЙКИ ═══
+AVITO_CLIENT_ID = "вводим свой"
+AVITO_CLIENT_SECRET = "вводим свой"
+BITRIX_WEBHOOK = "вводим свой"
+YANDEX_API_KEY = "вводим свой"
+YANDEX_FOLDER_ID = "вводим свой"
+
+# ═══ ТЕСТОВЫЙ РЕЖИМ ═══
+TEST_MODE = True  # True = только тестовый чат, False = все чаты
+TEST_CHAT_ID = "u2i-XLndSkyMLagdf79HV5TJ_Q"
+ 
+# ═══ СИСТЕМНЫЙ ПРОМПТ ═══
+SYSTEM_PROMPT = """
+Ты — первоклассный менеджер по продажам оборудования для ремонта ГБЦ (головок блока цилиндров) и двигателей.
+Ты работаешь строго по технологии продаж из книги "Танец продавца" Елены Самсоновой.
+ 
+═══ ЭТАПЫ РАБОТЫ С КЛИЕНТОМ ═══
+ 
+1. ВСТУПЛЕНИЕ В КОНТАКТ
+   — Тёплое, без навязчивости.
+   — Первое сообщение: приветствие + открытый вопрос о задаче клиента.
+   Пример: "Добрый день! Расскажите, какое оборудование вас интересует и для каких задач?"
+ 
+2. СБОР ИНФОРМАЦИИ (самый важный этап — не предлагай товар раньше времени)
+   — Узнай: что за автосервис, какие работы делают, что сейчас не устраивает, какой бюджет.
+   — Определи тип клиента:
+     * Мотивация "К" (к выгоде): говорит "хочу зарабатывать больше", "хочу расширить услуги"
+     * Мотивация "От" (от проблемы): говорит "устал отдавать на сторону", "теряю клиентов"
+   — Задавай один вопрос за раз.
+ 
+3. ПРЕЗЕНТАЦИЯ — только после сбора информации
+   — Для клиента "К": "Это даст вам возможность...", "С этим оборудованием вы сможете..."
+   — Для клиента "От": "Это избавит вас от...", "Больше не придётся..."
+   — Говори о выгодах, а не только о характеристиках.
+ 
+4. РАБОТА С ВОЗРАЖЕНИЯМИ
+   — Никогда не спорь. Сначала присоединись: "Да, понимаю вас..."
+   — Дорого: "Давайте посчитаем, сколько стоит отдавать эту работу на сторону в месяц?"
+   — Подумаю: "Что именно хотите обдумать? Я помогу с информацией."
+ 
+5. ЗАВЕРШЕНИЕ СДЕЛКИ
+   — Если клиент говорит "беру", "как оплатить", "когда доставка", "оформляем" — ответь ТОЛЬКО: [ПЕРЕДАТЬ_МЕНЕДЖЕРУ]
+ 
+═══ ПРАВИЛА ═══
+— Отвечай коротко: 2-4 предложения. Не пиши длинные сообщения.
+— Один вопрос за раз.
+— Никогда не давай скидки без менеджера.
+— Не придумывай характеристики которых нет в базе — говори "уточню у специалиста".
+— Если вопрос не по теме — мягко верни к оборудованию.
+ 
+═══ КАТАЛОГ ТОВАРОВ И ЦЕНЫ ═══
+ 
+1. СТЕНДЫ ДЛЯ РЕМОНТА ....
+Стенд ....
+Габариты: ....
+Функции: р....
+Комплект: .....
+ ...................
+..................
+0 руб.
+"""
+ 
+# ═══ АВИТО ═══
+def get_avito_token():
+    url = "https://api.avito.ru/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": AVITO_CLIENT_ID,
+        "client_secret": AVITO_CLIENT_SECRET,
+    }
+    return requests.post(url, data=data).json()["access_token"]
+ 
+def get_user_id(token):
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get("https://api.avito.ru/core/v1/accounts/self", headers=headers).json()["id"]
+ 
+def get_chats(token, user_id):
+    url = f"https://api.avito.ru/messenger/v2/accounts/{user_id}/chats"
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get(url, headers=headers, params={"limit": 50}).json().get("chats", [])
+ 
+def get_messages(token, user_id, chat_id):
+    url = f"https://api.avito.ru/messenger/v3/accounts/{user_id}/chats/{chat_id}/messages"
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get(url, headers=headers, params={"limit": 20}).json().get("messages", [])
+ 
+def send_message(token, user_id, chat_id, text):
+    url = f"https://api.avito.ru/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages"
+    headers = {"Authorization": f"Bearer {token}"}
+    requests.post(url, headers=headers, json={"message": {"text": text}, "type": "text"})
+ 
+# ═══ БИТРИКС ═══
+def lead_exists(chat_id):
+    url = f"{BITRIX_WEBHOOK}crm.lead.list.json"
+    data = {"filter": {"SOURCE_DESCRIPTION": f"chat_id: {chat_id}"}, "select": ["ID", "STATUS_ID"]}
+    result = requests.post(url, json=data).json().get("result", [])
+    return result[0] if result else None
+ 
+def create_lead(name, chat_id, item_title, city, item_url, profile_url, date_created):
+    url = f"{BITRIX_WEBHOOK}crm.lead.add.json"
+    comments = f"Товар: {item_title}\nГород: {city}\nДата: {date_created}\nОбъявление: {item_url}\nПрофиль: {profile_url}"
+    data = {"fields": {
+        "TITLE": f"Авито: {name} — {item_title}",
+        "NAME": name,
+        "SOURCE_ID": "WEB",
+        "SOURCE_DESCRIPTION": f"chat_id: {chat_id}",
+        "COMMENTS": comments,
+        "STATUS_ID": "NEW"
+    }}
+    return requests.post(url, json=data).json()
+ 
+def update_lead_status(lead_id, status):
+    url = f"{BITRIX_WEBHOOK}crm.lead.update.json"
+    requests.post(url, json={"id": lead_id, "fields": {"STATUS_ID": status}})
+ 
+def notify_manager(chat_id, name, item_title):
+    url = f"{BITRIX_WEBHOOK}im.message.add.json"
+    data = {
+        "TO": 370,
+        "MESSAGE": f"🔥 ГОРЯЧИЙ ЛИД!\nКлиент: {name}\nТовар: {item_title}\nЧат Авито: {chat_id}\nКлиент готов к покупке!"
+    }
+    requests.post(url, json=data)
+ 
+# ═══ ЯНДЕКС GPT ═══
+def get_ai_response(user_message, chat_history=None):
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}", "Content-Type": "application/json"}
+    messages = [{"role": "system", "text": SYSTEM_PROMPT}]
+ 
+    if chat_history:
+        for msg in chat_history[-10:]:
+            text = msg.get("content", {}).get("text", "")
+            if text and msg.get("type") == "text":
+                role = "user" if msg.get("direction") == "in" else "assistant"
+                messages.append({"role": role, "text": text})
+ 
+    messages.append({"role": "user", "text": user_message})
+ 
+    data = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
+        "completionOptions": {"stream": False, "temperature": 0.4, "maxTokens": 300},
+        "messages": messages
+    }
+    result = requests.post(url, headers=headers, json=data).json()
+    return result["result"]["alternatives"][0]["message"]["text"]
+ 
+# ═══ ОБРАБОТКА ЧАТА ═══
+def process_chat(token, user_id, chat):
+    chat_id = chat["id"]
+    context = chat.get("context", {}).get("value", {})
+    item_title = context.get("title", "Неизвестный товар")
+    city = context.get("location", {}).get("title", "Неизвестный город")
+    item_url = context.get("url", "")
+    timestamp = chat.get("created", 0)
+    date_created = datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M") if timestamp else ""
+ 
+    name = "Неизвестный клиент"
+    profile_url = ""
+    for user in chat.get("users", []):
+        if user["id"] != user_id:
+            name = user.get("name", "Неизвестный клиент")
+            profile_url = user.get("public_user_profile", {}).get("url", "")
+            break
+ 
+    lead = lead_exists(chat_id)
+ 
+    if lead and lead.get("STATUS_ID") == "IN_PROCESS":
+        print(f"Пропускаем {chat_id} — работает менеджер")
+        return
+ 
+    if not lead:
+        result = create_lead(name, chat_id, item_title, city, item_url, profile_url, date_created)
+        lead_id = result.get("result")
+        print(f"Создан лид #{lead_id} — {name}")
+    else:
+        lead_id = lead["ID"]
+ 
+    messages = get_messages(token, user_id, chat_id)
+    if not messages:
+        return
+ 
+    last_msg = messages[0]
+    direction = last_msg.get("direction", "")
+    msg_text = last_msg.get("content", {}).get("text", "")
+    msg_type = last_msg.get("type", "")
+ 
+    if direction != "in" or msg_type != "text" or not msg_text:
+        return
+
+    # Проверяем — есть ли наш ответ после последнего сообщения клиента
+    last_msg_id = last_msg.get("id", "")
+    last_msg_time = last_msg.get("created", 0)
+
+    # Смотрим есть ли исходящее сообщение новее входящего
+    for msg in messages:
+        if msg.get("direction") == "out" and msg.get("created", 0) > last_msg_time:
+            print(f"Уже ответили на это сообщение — пропускаем")
+            return
+ 
+    print(f"Сообщение от {name}: {msg_text}")
+ 
+    ai_response = get_ai_response(msg_text, messages[1:])
+    print(f"Ответ бота: {ai_response}")
+ 
+    if "[ПЕРЕДАТЬ_МЕНЕДЖЕРУ]" in ai_response:
+        send_message(token, user_id, chat_id, "Отлично! Сейчас подключу менеджера, он свяжется с вами в ближайшее время.")
+        notify_manager(chat_id, name, item_title)
+        update_lead_status(lead_id, "IN_PROCESS")
+        print(f"Передано менеджеру: {name}")
+    else:
+        send_message(token, user_id, chat_id, ai_response)
+ 
+    time.sleep(0.5)
+ 
+# ═══ ГЛАВНАЯ ЛОГИКА ═══
+def main():
+    print(f"Запуск — {datetime.now().strftime('%H:%M:%S')}")
+    token = get_avito_token()
+    user_id = get_user_id(token)
+    chats = get_chats(token, user_id)
+ 
+    if TEST_MODE:
+        print(f"ТЕСТОВЫЙ РЕЖИМ — чат {TEST_CHAT_ID}")
+        test_chat = next((c for c in chats if c["id"] == TEST_CHAT_ID), None)
+        if test_chat:
+            process_chat(token, user_id, test_chat)
+        else:
+            print("Тестовый чат не найден")
+    else:
+        print(f"Чатов: {len(chats)}")
+        for chat in chats:
+            process_chat(token, user_id, chat)
+ 
+    print("Готово.")
+ 
+if __name__ == "__main__":
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"Ошибка: {e} — повтор через 10 секунд")
+        print("Следующая проверка через 10 секунд...")
+        time.sleep(10)
