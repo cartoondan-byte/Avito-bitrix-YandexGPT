@@ -1,0 +1,105 @@
+import requests
+import time
+
+# ═══ НАСТРОЙКИ ═══
+AVITO_CLIENT_ID = "вводим свой"
+AVITO_CLIENT_SECRET = "вводим свой"
+BITRIX_WEBHOOK = "вводим свой"
+
+# ═══ АВИТО: ПОЛУЧИТЬ ТОКЕН ═══
+def get_avito_token():
+    url = "https://api.avito.ru/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": AVITO_CLIENT_ID,
+        "client_secret": AVITO_CLIENT_SECRET,
+    }
+    response = requests.post(url, data=data)
+    return response.json()["access_token"]
+
+# ═══ АВИТО: ПОЛУЧИТЬ USER ID ═══
+def get_user_id(token):
+    url = "https://api.avito.ru/core/v1/accounts/self"
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(url, headers=headers)
+    return response.json()["id"]
+
+# ═══ АВИТО: ПОЛУЧИТЬ ЧАТЫ ═══
+def get_chats(token, user_id):
+    url = f"https://api.avito.ru/messenger/v2/accounts/{user_id}/chats"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"limit": 2}  # для теста 2, потом увеличим
+    response = requests.get(url, headers=headers, params=params)
+    return response.json().get("chats", [])
+
+# ═══ БИТРИКС: ПРОВЕРИТЬ СУЩЕСТВУЕТ ЛИ ЛИД ═══
+def lead_exists(chat_id):
+    url = f"{BITRIX_WEBHOOK}crm.lead.list.json"
+    data = {
+        "filter": {"SOURCE_DESCRIPTION": f"chat_id: {chat_id}"},
+        "select": ["ID"]
+    }
+    response = requests.post(url, json=data)
+    result = response.json().get("result", [])
+    return len(result) > 0
+
+# ═══ БИТРИКС: СОЗДАТЬ ЛИД ═══
+def create_lead(name, chat_id, item_title, city):
+    url = f"{BITRIX_WEBHOOK}crm.lead.add.json"
+    data = {
+        "fields": {
+            "TITLE": f"Авито: {name} — {item_title}",
+            "NAME": name,
+            "SOURCE_ID": "WEB",
+            "SOURCE_DESCRIPTION": f"chat_id: {chat_id}",
+            "COMMENTS": f"Товар: {item_title} | Город: {city}",
+        }
+    }
+    response = requests.post(url, json=data)
+    return response.json()
+
+# ═══ ГЛАВНАЯ ЛОГИКА ═══
+def main():
+    print("Запуск...")
+    token = get_avito_token()
+    user_id = get_user_id(token)
+    print(f"User ID: {user_id}")
+
+    chats = get_chats(token, user_id)
+    print(f"Найдено чатов: {len(chats)}")
+
+    created = 0
+    skipped = 0
+
+    for chat in chats:
+        chat_id = chat["id"]
+
+        # Проверяем дубль по chat_id
+        if lead_exists(chat_id):
+            print(f"Пропускаем — лид уже есть: {chat_id}")
+            skipped += 1
+            continue
+
+        # Достаём данные из чата
+        item_title = chat.get("context", {}).get("value", {}).get("title", "Неизвестный товар")
+        city = chat.get("context", {}).get("value", {}).get("location", {}).get("title", "Неизвестный город")
+
+        # Имя клиента
+        name = "Неизвестный клиент"
+        for user in chat.get("users", []):
+            if user["id"] != user_id:
+                name = user.get("name", "Неизвестный клиент")
+                break
+
+        # Создаём лид
+        result = create_lead(name, chat_id, item_title, city)
+        lead_id = result.get("result")
+        print(f"Создан лид #{lead_id} — {name} | {item_title} | {city}")
+        created += 1
+
+        time.sleep(0.5)
+
+    print(f"\nГотово! Создано: {created} | Пропущено (уже есть): {skipped}")
+
+if __name__ == "__main__":
+    main()
